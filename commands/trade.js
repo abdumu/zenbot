@@ -554,7 +554,7 @@ module.exports = function (program, conf) {
                   }
 
                   forwardScan()
-                  setInterval(forwardScan, so.poll_trades)
+                  setInterval(forwardScan, parseInt(so.poll_trades))
                   if (!so.non_interactive) {
                     engine.onMessage(executeCommand)
                   }
@@ -761,7 +761,7 @@ module.exports = function (program, conf) {
           }
           marker.to = marker.to ? Math.max(marker.to, trade_cursor) : trade_cursor
           marker.newest_time = Math.max(marker.newest_time, trade.time)
-          trades.save(trade, function (err) {
+          trades.replaceOne({_id: trade.id}, trade, {upsert: true}, function (err) {
             // ignore duplicate key errors
             if (err && err.code !== 11000) {
               console.error('\n' + moment().format('YYYY-MM-DD HH:mm:ss') + ' - error saving trade')
