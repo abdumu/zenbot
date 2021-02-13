@@ -96,6 +96,12 @@ module.exports = function container (conf) {
         args.start = args.end - (opts.offset || this.offset)
       }
 
+      //time window of no more than 1 month
+      var timeWindow = (args.end - args.start) / 86400
+      if(timeWindow > 31) {
+        args.start = args.end - ((timeWindow-31)*86400)
+      }
+
       client._public('returnTradeHistory', args, function (err, body) {
         if (err) return cb(err)
         if (typeof body === 'string') {
@@ -140,7 +146,7 @@ module.exports = function container (conf) {
         var balance = {asset: 0, currency: 0}
         if (typeof body === 'string') {
           return retry('getBalance', args, isTooManyRequestError(body) ? 60000 : 200)
-        }
+        } 
         if (body.error) {
           console.error('\ngetBalance error:')
           console.error(body)
