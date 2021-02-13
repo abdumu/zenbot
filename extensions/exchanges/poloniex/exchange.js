@@ -27,10 +27,23 @@ module.exports = function container (conf) {
     return product_id.split('-')[1] + '_' + product_id.split('-')[0]
   }
 
-  function retry (method, args) {
+  function isTooManyRequestError(result) {
+    if(typeof result === 'string') {
+      error_message = result
+    } else if (result && typeof result.error === 'string') {
+      error_message = result.error
+    } else {
+      error_message = String(result)
+    }
+
+    console.log('\nToo many requests! Retrying in few moments...')
+    return error_message.indexOf('Too many requests') !== -1
+  }
+
+  function retry (method, args, retry_in = 200) {  
     setTimeout(function () {
       exchange[method].apply(exchange, args)
-    }, 1)
+    }, retry_in)
   }
 
   var orders = {}
@@ -41,6 +54,17 @@ module.exports = function container (conf) {
     makerFee: 0.15,
     takerFee: 0.25,
     offset: 43200,
+    lastApiCall: 0,
+
+    rateLimitWatcher: function() {
+      if(this.lastApiCall !== 0 && (Date.now() - this.lastApiCall) < 100) {
+        return true
+      }
+
+      this.lastApiCall = Date.now()
+
+      return false
+    },
 
     getProducts: function () {
       return require('./products.json')
@@ -48,6 +72,11 @@ module.exports = function container (conf) {
 
     getTrades: function (opts, cb) {
       var func_args = [].slice.call(arguments)
+
+      if(this.rateLimitWatcher()) {
+        return retry('getTrades', func_args)
+      }
+  
       var client = publicClient()
       var args = {
         currencyPair: joinProduct(opts.product_id)
@@ -70,12 +99,13 @@ module.exports = function container (conf) {
       client._public('returnTradeHistory', args, function (err, body) {
         if (err) return cb(err)
         if (typeof body === 'string') {
-          return retry('getTrades', func_args)
+          return retry('getTrades', func_args, isTooManyRequestError(body) ? 6000 : 200)
         }
         if (!body.map) {
           console.error('\ngetTrades odd result:')
           console.error(body)
-          return retry('getTrades', func_args)
+  
+          return retry('getTrades', func_args, isTooManyRequestError(body) ? 6000 : 200)
         }
 
         if (body.length >= 50000) {
@@ -98,17 +128,23 @@ module.exports = function container (conf) {
 
     getBalance: function (opts, cb) {
       var args = [].slice.call(arguments)
+
+      if(this.rateLimitWatcher()) {
+        return retry('getBalance', args)
+      }
+  
       var client = authedClient()
+
       client.returnCompleteBalances(function (err, body) {
         if (err) return cb(err)
         var balance = {asset: 0, currency: 0}
         if (typeof body === 'string') {
-          return retry('getBalance', args)
+          return retry('getBalance', args, isTooManyRequestError(body) ? 6000 : 200)
         }
         if (body.error) {
           console.error('\ngetBalance error:')
           console.error(body)
-          return retry('getBalance', args)
+          return retry('getBalance', args, isTooManyRequestError(body) ? 6000 : 200)
         }
         if (body[opts.currency]) {
           balance.currency = n(body[opts.currency].available).add(body[opts.currency].onOrders).format('0.00000000')
@@ -123,11 +159,17 @@ module.exports = function container (conf) {
     },
 
     getOrderBook: function (opts, cb) {
+
+      if(this.rateLimitWatcher()) {
+        return retry('getOrderBook', null)
+      }
+
       var client = publicClient()
       var params = {
         currencyPair: joinProduct(opts.product_id),
         depth: 10
       }
+  
       client._public('returnOrderBook', params, function (err,  data) {
         if (typeof data !== 'object') {
           return cb(null, [])
@@ -135,7 +177,7 @@ module.exports = function container (conf) {
         if (data.error) {
           console.error('getOrderBook error:')
           console.error(data)
-          return retry('getOrderBook', params)
+          return retry('getOrderBook', params, isTooManyRequestError(data) ? 6000 : 1000)
         }
         cb(null, {
           buyOrderRate: data.bids[0][0],
@@ -148,17 +190,23 @@ module.exports = function container (conf) {
 
     getQuote: function (opts, cb) {
       var args = [].slice.call(arguments)
+
+      if(this.rateLimitWatcher()) {
+        return retry('getQuote', args)
+      }
+  
       var client = publicClient()
       var product_id = joinProduct(opts.product_id)
+  
       client.getTicker(function (err, body) {
         if (err) return cb(err)
         if (typeof body === 'string') {
-          return retry('getQuote', args)
+          return retry('getQuote', args, isTooManyRequestError(body) ? 6000 : 200)
         }
         if (body.error) {
           console.error('\ngetQuote error:')
           console.error(body)
-          return retry('getQuote', args)
+          return retry('getQuote', args, isTooManyRequestError(body) ? 6000 : 200)
         }
         var quote = body[product_id]
         if (!quote) return cb(new Error('no quote for ' + product_id))
@@ -172,10 +220,16 @@ module.exports = function container (conf) {
 
     cancelOrder: function (opts, cb) {
       var args = [].slice.call(arguments)
+
+
+      if(this.rateLimitWatcher()) {
+        return retry('cancelOrder', args)
+      }
+  
       var client = authedClient()
       client._private('cancelOrder', {orderNumber: opts.order_id}, function (err, result) {
         if (typeof result === 'string') {
-          return retry('cancelOrder', args)
+          return retry('cancelOrder', args, isTooManyRequestError(result) ? 6000 : 1000)
         }
         if (!err && !result.success) {
           // sometimes the order gets cancelled on the server side for some reason and we get this. ignore that case...
@@ -190,6 +244,11 @@ module.exports = function container (conf) {
 
     trade: function (type, opts, cb) {
       var args = [].slice.call(arguments)
+
+      if(this.rateLimitWatcher()) {
+        return retry('trade', args)
+      }
+
       var client = authedClient()
       var params = {
         currencyPair: joinProduct(opts.product_id),
@@ -199,7 +258,7 @@ module.exports = function container (conf) {
       }
       client._private(type, params, function (err, result) {
         if (typeof result === 'string') {
-          return retry('trade', args)
+          return retry('trade', args, isTooManyRequestError(result) ? 6000 : 1000)
         }
         var order = {
           id: result ? result.orderNumber : null,
@@ -242,6 +301,11 @@ module.exports = function container (conf) {
 
     getOrder: function (opts, cb) {
       var args = [].slice.call(arguments)
+
+      if(this.rateLimitWatcher()) {
+        return retry('getOrder', args)
+      }
+
       var order = orders['~' + opts.order_id]
       if (!order) return cb(new Error('order not found in cache'))
       var client = authedClient()
@@ -251,7 +315,7 @@ module.exports = function container (conf) {
       client._private('returnOpenOrders', params, function (err, body) {
         if (err) return cb(err)
         if (typeof body === 'string' || !body) {
-          return retry('getOrder', args)
+          return retry('getOrder', args, isTooManyRequestError(body) ? 6000 : 200)
         }
         var active = false
         if (!body.forEach) {
@@ -266,7 +330,7 @@ module.exports = function container (conf) {
         }
         client.returnOrderTrades(opts.order_id, function (err, body) {
           if (typeof body === 'string' || !body) {
-            return retry('getOrder', args)
+            return retry('getOrder', args, isTooManyRequestError(body) ? 6000 : 200)
           }
           if (err || body.error || !body.forEach) return cb(null, order)
           if (body.length === 0 && !active) {
